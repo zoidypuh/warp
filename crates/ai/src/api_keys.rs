@@ -8,7 +8,7 @@ pub use crate::aws_credentials::{AwsCredentials, AwsCredentialsState};
 
 const SECURE_STORAGE_KEY: &str = "AiApiKeys";
 pub const LOCAL_OPENAI_ENDPOINT_DEFAULT_BASE_URL: &str = "http://127.0.0.1:8317/v1";
-pub const LOCAL_OPENAI_ENDPOINT_DEFAULT_API_KEY: &str = "hermes";
+pub const LOCAL_OPENAI_ENDPOINT_DEFAULT_API_KEY: &str = "warp";
 pub const LOCAL_OPENAI_ENDPOINT_DEFAULT_MODEL: &str = "gpt-5.5";
 
 /// Emitted when user-provided API keys are updated in-memory.
