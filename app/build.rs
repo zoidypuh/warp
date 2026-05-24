@@ -168,6 +168,7 @@ fn generate_channel_config_if_needed(target_family: &str, target_os: &str) {
         .status()
         .is_err()
     {
+        generate_public_local_channel_config_if_needed();
         return;
     }
 
@@ -212,6 +213,47 @@ fn generate_channel_config_if_needed(target_family: &str, target_os: &str) {
             panic!("Failed to write config to {}: {err}", config_path.display())
         });
     }
+}
+
+fn generate_public_local_channel_config_if_needed() {
+    let cargo_bin_name = env::var("CARGO_BIN_NAME").unwrap_or_default();
+    if cargo_bin_name != "local" {
+        return;
+    }
+
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR must be set");
+    let config_path = Path::new(&out_dir).join("local_config.json");
+
+    // Public forks do not have access to Warp's internal channel config generator.
+    // This keeps WarpLocal buildable while disabling telemetry, crash reporting, and autoupdates.
+    fs::write(
+        &config_path,
+        r#"{
+  "app_id": "dev.warp.WarpLocal",
+  "logfile_name": "warp-local.log",
+  "server_config": {
+    "server_root_url": "https://app.warp.dev",
+    "rtc_server_url": "wss://rtc.app.warp.dev/graphql/v2",
+    "session_sharing_server_url": "wss://sessions.app.warp.dev",
+    "firebase_auth_api_key": "AIzaSyBdy3O3S9hrdayLJxJ7mriBR4qgUaUygAs"
+  },
+  "oz_config": {
+    "oz_root_url": "https://oz.warp.dev",
+    "workload_audience_url": null
+  },
+  "telemetry_config": null,
+  "autoupdate_config": null,
+  "crash_reporting_config": null,
+  "mcp_static_config": null
+}
+"#,
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "Failed to write public local channel config to {}: {err}",
+            config_path.display()
+        )
+    });
 }
 
 fn get_build_profile_name() -> String {
