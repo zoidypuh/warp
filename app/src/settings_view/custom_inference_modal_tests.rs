@@ -11,12 +11,26 @@ fn validate_url_accepts_https_with_host() {
 fn validate_url_rejects_http() {
     assert_eq!(
         validate_url("http://api.example.com/v1"),
-        Err("URL must use HTTPS")
+        Err("URL must use HTTPS unless using a local endpoint")
     );
     assert_eq!(
         validate_url("http://example.com"),
-        Err("URL must use HTTPS")
+        Err("URL must use HTTPS unless using a local endpoint")
     );
+}
+
+#[test]
+fn validate_url_accepts_local_http_endpoints() {
+    assert!(validate_url("http://localhost:8317/v1").is_ok());
+    assert!(validate_url("http://127.0.0.1:8317/v1").is_ok());
+    assert!(validate_url("http://10.0.0.1/v1").is_ok());
+    assert!(validate_url("http://172.16.0.1/v1").is_ok());
+    assert!(validate_url("http://192.168.0.1/v1").is_ok());
+    assert!(validate_url("http://169.254.0.1/v1").is_ok());
+    assert!(validate_url("http://[::1]/v1").is_ok());
+    assert!(validate_url("http://[fc00::1]/v1").is_ok());
+    assert!(validate_url("http://[fe80::1]/v1").is_ok());
+    assert!(validate_url("http://[::ffff:192.168.0.1]/v1").is_ok());
 }
 
 #[test]
@@ -57,20 +71,37 @@ fn validate_url_allows_whitespace_only() {
 }
 
 #[test]
-fn validate_url_rejects_localhost_and_private_ips() {
-    let error = Err("URL must not use a local or private host");
-    assert_eq!(validate_url("https://localhost:8080"), error);
-    assert_eq!(validate_url("https://127.0.0.1/v1"), error);
-    assert_eq!(validate_url("https://0.0.0.0/v1"), error);
-    assert_eq!(validate_url("https://10.0.0.1/v1"), error);
-    assert_eq!(validate_url("https://172.16.0.1/v1"), error);
-    assert_eq!(validate_url("https://192.168.0.1/v1"), error);
-    assert_eq!(validate_url("https://169.254.0.1/v1"), error);
-    assert_eq!(validate_url("https://[::1]/v1"), error);
-    assert_eq!(validate_url("https://[::]/v1"), error);
-    assert_eq!(validate_url("https://[fc00::1]/v1"), error);
-    assert_eq!(validate_url("https://[fe80::1]/v1"), error);
-    assert_eq!(validate_url("https://[::ffff:192.168.0.1]/v1"), error);
+fn validate_url_accepts_local_https_endpoints() {
+    assert!(validate_url("https://localhost:8080").is_ok());
+    assert!(validate_url("https://127.0.0.1/v1").is_ok());
+    assert!(validate_url("https://10.0.0.1/v1").is_ok());
+    assert!(validate_url("https://172.16.0.1/v1").is_ok());
+    assert!(validate_url("https://192.168.0.1/v1").is_ok());
+    assert!(validate_url("https://169.254.0.1/v1").is_ok());
+    assert!(validate_url("https://[::1]/v1").is_ok());
+    assert!(validate_url("https://[fc00::1]/v1").is_ok());
+    assert!(validate_url("https://[fe80::1]/v1").is_ok());
+    assert!(validate_url("https://[::ffff:192.168.0.1]/v1").is_ok());
+}
+
+#[test]
+fn validate_url_rejects_unspecified_local_endpoints() {
+    assert_eq!(
+        validate_url("http://0.0.0.0/v1"),
+        Err("URL must include a reachable host")
+    );
+    assert_eq!(
+        validate_url("https://0.0.0.0/v1"),
+        Err("URL must include a reachable host")
+    );
+    assert_eq!(
+        validate_url("http://[::]/v1"),
+        Err("URL must include a reachable host")
+    );
+    assert_eq!(
+        validate_url("https://[::]/v1"),
+        Err("URL must include a reachable host")
+    );
 }
 
 #[test]
