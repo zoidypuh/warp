@@ -7,7 +7,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use ai::api_keys::{ApiKeyManager, AwsCredentialsRefreshStrategy};
+use ai::api_keys::{ApiKeyManager, AwsCredentialsRefreshStrategy, LocalOpenAIEndpointConfig};
 use anyhow::Context;
 pub(crate) use driver::harness::{task_env_vars, validate_cli_installed, ClaudeHarness};
 pub use driver::AgentDriver;
@@ -35,7 +35,7 @@ use warp_graphql::object_permissions::OwnerType;
 use warp_isolation_platform::IsolationPlatformError;
 #[cfg(not(target_family = "wasm"))]
 use warp_logging::log_file_path;
-use warp_managed_secrets::ManagedSecretManager;
+use warp_managed_secrets::{ManagedSecretManager, ManagedSecretValue};
 use warpui::platform::TerminationMode;
 use warpui::{AppContext, ModelSpawner, SingletonEntity};
 
@@ -50,7 +50,7 @@ use crate::ai::agent_sdk::mcp_config::build_mcp_servers_from_specs;
 use crate::ai::agent_sdk::setup_observability::{
     SetupClientEventReporter, SetupStep, SetupTimelineEvent,
 };
-use crate::ai::ambient_agents::task::HarnessConfig;
+use crate::ai::ambient_agents::task::{HarnessConfig, HarnessModelConfig};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::attachment_utils::attachments_download_dir;
 #[cfg(not(target_family = "wasm"))]
@@ -529,6 +529,81 @@ fn reconcile_task_harness(
     harness_kind(*selected_harness)
 }
 
+const LOCAL_OPENAI_ENDPOINT_SECRET_NAME: &str = "local-openai-endpoint";
+
+fn apply_local_openai_endpoint_config(
+    driver_options: &mut AgentDriverOptions,
+    task: &mut Task,
+    merged_config: Option<&mut AgentConfigSnapshot>,
+    local_endpoint: &LocalOpenAIEndpointConfig,
+) -> Result<(), AgentDriverError> {
+    if !local_endpoint.is_configured() {
+        return Ok(());
+    }
+
+    let model_id = local_endpoint.model_id.trim();
+    let should_promote_default_harness = merged_config.is_some();
+
+    match driver_options.selected_harness {
+        Harness::Oz if should_promote_default_harness => {
+            driver_options.selected_harness = Harness::Codex;
+            task.harness = harness_kind(Harness::Codex)?;
+        }
+        Harness::Oz => return Ok(()),
+        Harness::Codex => {}
+        _ => return Ok(()),
+    }
+
+    if let Some(config) = merged_config {
+        config.model_id = None;
+        match config.harness.as_mut() {
+            Some(harness) if harness.harness_type == Harness::Codex => {
+                if harness
+                    .model_id
+                    .as_ref()
+                    .is_none_or(|id| id.trim().is_empty())
+                {
+                    harness.model_id = Some(model_id.to_string());
+                }
+            }
+            Some(harness) if harness.harness_type == Harness::Oz => {
+                harness.harness_type = Harness::Codex;
+                harness.model_id = Some(model_id.to_string());
+                harness.reasoning_level = None;
+            }
+            Some(_) => {}
+            None => {
+                config.harness = Some(HarnessConfig {
+                    harness_type: Harness::Codex,
+                    model_id: Some(model_id.to_string()),
+                    reasoning_level: None,
+                });
+            }
+        }
+    }
+
+    if driver_options
+        .third_party_harness_model_config
+        .as_ref()
+        .is_none_or(|config| config.model_id.trim().is_empty())
+    {
+        driver_options.third_party_harness_model_config = Some(HarnessModelConfig {
+            model_id: model_id.to_string(),
+            reasoning_level: None,
+        });
+    }
+
+    driver_options.secrets.insert(
+        LOCAL_OPENAI_ENDPOINT_SECRET_NAME.to_string(),
+        ManagedSecretValue::openai_api_key(
+            local_endpoint.api_key.trim().to_string(),
+            Some(local_endpoint.base_url.trim().to_string()),
+        ),
+    );
+
+    Ok(())
+}
+
 /// Resolve a `Prompt` to a plain string.
 fn resolve_prompt(prompt: &Prompt, ctx: &AppContext) -> Result<String, AgentDriverError> {
     match prompt {
@@ -883,7 +958,7 @@ impl AgentDriverRunner {
 
         // Build the AgentConfigSnapshot, Task, and AgentDriverOptions
         let prompt_clone = prompt.clone();
-        let (merged_config, mut task, mut driver_options) = foreground
+        let (mut merged_config, mut task, mut driver_options) = foreground
             .spawn(move |_, ctx| -> anyhow::Result<_> {
                 let (merged_config, task) =
                     build_merged_config_and_task(&args, &resolved_skill, &prompt_clone, ctx)?;
@@ -924,13 +999,22 @@ impl AgentDriverRunner {
             .await?
             .map_err(AgentDriverError::ConfigBuildFailed)?;
 
+        let local_openai_endpoint = foreground
+            .spawn(|_, ctx| {
+                ApiKeyManager::as_ref(ctx)
+                    .keys()
+                    .local_openai_endpoint
+                    .clone()
+            })
+            .await?;
+
         let environment_id = merged_config.environment_id.clone();
 
         // Handle secrets/attachments fetch (existing task) or task creation (new run).
         // The existing-task branch also surfaces the task's `conversation_id` (if any) so
         // the caller can wire up resume without a separate `--conversation` arg.
         let task_conversation_id = if let Some(task_id_str) = task_id_str {
-            setup_events
+            let conversation_id = setup_events
                 .record_result(
                     SetupStep::TaskDataFetch,
                     Self::fetch_secrets_and_attachments(
@@ -940,7 +1024,14 @@ impl AgentDriverRunner {
                         &mut task,
                     ),
                 )
-                .await?
+                .await?;
+            apply_local_openai_endpoint_config(
+                &mut driver_options,
+                &mut task,
+                None,
+                &local_openai_endpoint,
+            )?;
+            conversation_id
         } else {
             // Extract the prompt text that we'll pass up to the server when we create the task.
             let prompt_for_task_creation = match &prompt {
@@ -953,6 +1044,13 @@ impl AgentDriverRunner {
                     // error. `clap` should have handled this when parsing args already.
                     .ok_or(AgentDriverError::InvalidRuntimeState)?,
             };
+
+            apply_local_openai_endpoint_config(
+                &mut driver_options,
+                &mut task,
+                Some(&mut merged_config),
+                &local_openai_endpoint,
+            )?;
 
             Self::initialize_new_task(
                 foreground,

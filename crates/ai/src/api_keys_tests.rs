@@ -69,6 +69,7 @@ fn serde_round_trip_with_provider_keys() {
         google: Some("AIzaSy123".into()),
         open_router: Some("sk-or-xxx".into()),
         custom_endpoints: vec![],
+        local_openai_endpoint: LocalOpenAIEndpointConfig::default(),
     };
     let json = serde_json::to_string(&keys).unwrap();
     let deser: ApiKeys = serde_json::from_str(&json).unwrap();
@@ -91,6 +92,34 @@ fn serde_round_trip_with_custom_endpoints() {
                 &[("llama-70b", None), ("mixtral", Some("mix"))],
             ),
         ],
+        local_openai_endpoint: LocalOpenAIEndpointConfig::default(),
+    };
+    let json = serde_json::to_string(&keys).unwrap();
+    let deser: ApiKeys = serde_json::from_str(&json).unwrap();
+    assert_eq!(keys, deser);
+}
+
+#[test]
+fn serde_defaults_local_openai_endpoint_for_old_payloads() {
+    let json = r#"{"openai":"sk-x","custom_endpoints":[]}"#;
+    let keys: ApiKeys = serde_json::from_str(json).unwrap();
+    assert_eq!(keys.openai, Some("sk-x".into()));
+    assert_eq!(
+        keys.local_openai_endpoint,
+        LocalOpenAIEndpointConfig::default()
+    );
+}
+
+#[test]
+fn serde_round_trip_with_local_openai_endpoint() {
+    let keys = ApiKeys {
+        local_openai_endpoint: LocalOpenAIEndpointConfig {
+            enabled: true,
+            base_url: "http://127.0.0.1:8317/v1".into(),
+            api_key: "local-key".into(),
+            model_id: "gpt-local".into(),
+        },
+        ..Default::default()
     };
     let json = serde_json::to_string(&keys).unwrap();
     let deser: ApiKeys = serde_json::from_str(&json).unwrap();
@@ -134,6 +163,30 @@ fn has_any_key_true_for_custom_endpoints_only() {
 fn has_any_key_false_for_endpoint_with_empty_api_key() {
     let keys = ApiKeys {
         custom_endpoints: vec![endpoint("ep", "https://a.io", "", &[("m", None)])],
+        ..Default::default()
+    };
+    assert!(!keys.has_any_key());
+}
+
+#[test]
+fn has_any_key_true_for_enabled_local_openai_endpoint() {
+    let keys = ApiKeys {
+        local_openai_endpoint: LocalOpenAIEndpointConfig {
+            enabled: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(keys.has_any_key());
+}
+
+#[test]
+fn has_any_key_false_for_disabled_local_openai_endpoint() {
+    let keys = ApiKeys {
+        local_openai_endpoint: LocalOpenAIEndpointConfig {
+            enabled: false,
+            ..Default::default()
+        },
         ..Default::default()
     };
     assert!(!keys.has_any_key());

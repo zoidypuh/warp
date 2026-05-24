@@ -7,6 +7,9 @@ use warpui_extras::secure_storage::{self, AppContextExt};
 pub use crate::aws_credentials::{AwsCredentials, AwsCredentialsState};
 
 const SECURE_STORAGE_KEY: &str = "AiApiKeys";
+pub const LOCAL_OPENAI_ENDPOINT_DEFAULT_BASE_URL: &str = "http://127.0.0.1:8317/v1";
+pub const LOCAL_OPENAI_ENDPOINT_DEFAULT_API_KEY: &str = "hermes";
+pub const LOCAL_OPENAI_ENDPOINT_DEFAULT_MODEL: &str = "gpt-5.5";
 
 /// Emitted when user-provided API keys are updated in-memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +29,36 @@ pub struct ApiKeys {
     pub openai: Option<String>,
     pub open_router: Option<String>,
     pub custom_endpoints: Vec<CustomEndpoint>,
+    pub local_openai_endpoint: LocalOpenAIEndpointConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalOpenAIEndpointConfig {
+    pub enabled: bool,
+    pub base_url: String,
+    pub api_key: String,
+    pub model_id: String,
+}
+
+impl Default for LocalOpenAIEndpointConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: LOCAL_OPENAI_ENDPOINT_DEFAULT_BASE_URL.to_string(),
+            api_key: LOCAL_OPENAI_ENDPOINT_DEFAULT_API_KEY.to_string(),
+            model_id: LOCAL_OPENAI_ENDPOINT_DEFAULT_MODEL.to_string(),
+        }
+    }
+}
+
+impl LocalOpenAIEndpointConfig {
+    pub fn is_configured(&self) -> bool {
+        self.enabled
+            && !self.base_url.trim().is_empty()
+            && !self.api_key.trim().is_empty()
+            && !self.model_id.trim().is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -69,6 +102,7 @@ impl ApiKeys {
                 .custom_endpoints
                 .iter()
                 .any(|endpoint| !endpoint.api_key.trim().is_empty())
+            || self.local_openai_endpoint.is_configured()
     }
 
     /// Returns `true` when the user has at least one custom endpoint configured.
@@ -136,6 +170,46 @@ impl ApiKeyManager {
 
     pub fn set_open_router_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
         self.keys.open_router = key;
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.write_keys_to_secure_storage(ctx);
+    }
+
+    pub fn set_local_openai_endpoint_enabled(
+        &mut self,
+        enabled: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.keys.local_openai_endpoint.enabled = enabled;
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.write_keys_to_secure_storage(ctx);
+    }
+
+    pub fn set_local_openai_endpoint_base_url(
+        &mut self,
+        base_url: String,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.keys.local_openai_endpoint.base_url = base_url.trim().to_string();
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.write_keys_to_secure_storage(ctx);
+    }
+
+    pub fn set_local_openai_endpoint_api_key(
+        &mut self,
+        api_key: String,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.keys.local_openai_endpoint.api_key = api_key.trim().to_string();
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.write_keys_to_secure_storage(ctx);
+    }
+
+    pub fn set_local_openai_endpoint_model_id(
+        &mut self,
+        model_id: String,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.keys.local_openai_endpoint.model_id = model_id.trim().to_string();
         ctx.emit(ApiKeyManagerEvent::KeysUpdated);
         self.write_keys_to_secure_storage(ctx);
     }

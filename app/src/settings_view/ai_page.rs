@@ -1,4 +1,7 @@
-use ::ai::api_keys::{ApiKeyManager, ApiKeys};
+use ::ai::api_keys::{
+    ApiKeyManager, ApiKeys, LOCAL_OPENAI_ENDPOINT_DEFAULT_API_KEY,
+    LOCAL_OPENAI_ENDPOINT_DEFAULT_BASE_URL, LOCAL_OPENAI_ENDPOINT_DEFAULT_MODEL,
+};
 use enum_iterator::all;
 use itertools::Itertools;
 use pathfinder_geometry::vector::vec2f;
@@ -2613,6 +2616,7 @@ pub enum AISettingsPageAction {
     ToggleUseAgentToolbar,
     ToggleVoiceInput,
     ToggleCanUseWarpCreditsForFallback,
+    ToggleLocalOpenAIEndpoint,
     HyperlinkClick(HyperlinkUrl),
     ToggleCodebaseContext,
     ToggleShowInputHintText,
@@ -3018,6 +3022,13 @@ impl TypedActionView for AISettingsPageView {
                     report_if_error!(settings
                         .can_use_warp_credits_for_fallback
                         .toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            AISettingsPageAction::ToggleLocalOpenAIEndpoint => {
+                ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
+                    let enabled = !manager.keys().local_openai_endpoint.enabled;
+                    manager.set_local_openai_endpoint_enabled(enabled, ctx);
                 });
                 ctx.notify();
             }
@@ -6905,8 +6916,12 @@ struct ApiKeysWidget {
     openai_api_key_editor: ViewHandle<EditorView>,
     anthropic_api_key_editor: ViewHandle<EditorView>,
     google_api_key_editor: ViewHandle<EditorView>,
+    local_openai_endpoint_url_editor: ViewHandle<EditorView>,
+    local_openai_endpoint_api_key_editor: ViewHandle<EditorView>,
+    local_openai_endpoint_model_editor: ViewHandle<EditorView>,
 
     can_use_warp_credits_for_fallback: SwitchStateHandle,
+    local_openai_endpoint_switch: SwitchStateHandle,
     upgrade_highlight_index: HighlightedHyperlink,
 
     custom_inference_info_tooltip: MouseStateHandle,
@@ -6925,6 +6940,7 @@ impl ApiKeysWidget {
             openai: openai_key,
             anthropic: anthropic_key,
             google: google_key,
+            local_openai_endpoint,
             ..
         } = ApiKeyManager::as_ref(ctx).keys().clone();
 
@@ -7013,12 +7029,126 @@ impl ApiKeysWidget {
             "AIzaSy..."
         );
 
+        macro_rules! create_local_endpoint_editor {
+            (
+                $editor:ident,
+                $value:expr,
+                $set_func:ident,
+                $placeholder:expr,
+                $is_password:literal,
+                $default_value:expr
+            ) => {
+                let $editor = ctx.add_typed_action_view(move |ctx| {
+                    let appearance = Appearance::handle(ctx).as_ref(ctx);
+                    let options = SingleLineEditorOptions {
+                        is_password: $is_password,
+                        text: TextOptions {
+                            font_size_override: Some(appearance.ui_font_size()),
+                            font_family_override: Some(appearance.monospace_font_family()),
+                            text_colors_override: Some(TextColors {
+                                default_color: appearance.theme().active_ui_text_color(),
+                                disabled_color: appearance.theme().disabled_ui_text_color(),
+                                hint_color: appearance.theme().disabled_ui_text_color(),
+                            }),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    let mut editor = EditorView::single_line(options, ctx);
+                    editor.set_placeholder_text($placeholder, ctx);
+                    editor.set_buffer_text(&$value, ctx);
+                    editor
+                });
+                AISettingsPageView::update_editor_interaction_state(
+                    $editor.clone(),
+                    is_any_ai_enabled,
+                    ctx,
+                );
+                let default_value = $default_value.to_string();
+                ctx.subscribe_to_view(&$editor, move |_, editor, event, ctx| {
+                    if matches!(event, EditorEvent::Blurred | EditorEvent::Enter) {
+                        let buffer_text = editor.as_ref(ctx).buffer_text(ctx);
+                        let trimmed = buffer_text.trim();
+                        let should_reset = trimmed.is_empty();
+                        let value = if should_reset {
+                            default_value.clone()
+                        } else {
+                            trimmed.to_string()
+                        };
+                        ApiKeyManager::handle(ctx).update(ctx, |model, ctx| {
+                            model.$set_func(value.clone(), ctx);
+                        });
+                        if should_reset {
+                            editor.update(ctx, |editor, ctx| {
+                                editor.set_buffer_text(&value, ctx);
+                            });
+                        }
+                    }
+                });
+            };
+        }
+
+        create_local_endpoint_editor!(
+            local_openai_endpoint_url_editor,
+            local_openai_endpoint.base_url.clone(),
+            set_local_openai_endpoint_base_url,
+            LOCAL_OPENAI_ENDPOINT_DEFAULT_BASE_URL,
+            false,
+            LOCAL_OPENAI_ENDPOINT_DEFAULT_BASE_URL
+        );
+        create_local_endpoint_editor!(
+            local_openai_endpoint_api_key_editor,
+            local_openai_endpoint.api_key.clone(),
+            set_local_openai_endpoint_api_key,
+            LOCAL_OPENAI_ENDPOINT_DEFAULT_API_KEY,
+            true,
+            LOCAL_OPENAI_ENDPOINT_DEFAULT_API_KEY
+        );
+        create_local_endpoint_editor!(
+            local_openai_endpoint_model_editor,
+            local_openai_endpoint.model_id.clone(),
+            set_local_openai_endpoint_model_id,
+            LOCAL_OPENAI_ENDPOINT_DEFAULT_MODEL,
+            false,
+            LOCAL_OPENAI_ENDPOINT_DEFAULT_MODEL
+        );
+
+        let local_openai_endpoint_url_editor_clone = local_openai_endpoint_url_editor.clone();
+        let local_openai_endpoint_api_key_editor_clone =
+            local_openai_endpoint_api_key_editor.clone();
+        let local_openai_endpoint_model_editor_clone = local_openai_endpoint_model_editor.clone();
+        ctx.subscribe_to_model(&AISettings::handle(ctx), move |_, _, event, ctx| {
+            if matches!(event, AISettingsChangedEvent::IsAnyAIEnabled { .. }) {
+                let is_any_ai_enabled = AISettings::as_ref(ctx).is_any_ai_enabled(ctx);
+                AISettingsPageView::update_editor_interaction_state(
+                    local_openai_endpoint_url_editor_clone.clone(),
+                    is_any_ai_enabled,
+                    ctx,
+                );
+                AISettingsPageView::update_editor_interaction_state(
+                    local_openai_endpoint_api_key_editor_clone.clone(),
+                    is_any_ai_enabled,
+                    ctx,
+                );
+                AISettingsPageView::update_editor_interaction_state(
+                    local_openai_endpoint_model_editor_clone.clone(),
+                    is_any_ai_enabled,
+                    ctx,
+                );
+                ctx.notify();
+            }
+        });
+
         Self {
             openai_api_key_editor,
             anthropic_api_key_editor,
             google_api_key_editor,
+            local_openai_endpoint_url_editor,
+            local_openai_endpoint_api_key_editor,
+            local_openai_endpoint_model_editor,
 
             can_use_warp_credits_for_fallback: Default::default(),
+            local_openai_endpoint_switch: Default::default(),
             upgrade_highlight_index: Default::default(),
 
             custom_inference_info_tooltip: Default::default(),
@@ -7094,6 +7224,71 @@ impl ApiKeysWidget {
             app,
         ));
         column.finish()
+    }
+
+    fn render_local_openai_endpoint(
+        &self,
+        appearance: &Appearance,
+        is_enabled: bool,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let local_endpoint = &ApiKeyManager::as_ref(app).keys().local_openai_endpoint;
+        let toggle = build_toggle_element(
+            render_body_item_label::<AISettingsPageAction>(
+                "Local cli-proxy".to_string(),
+                Some(styles::header_font_color(is_enabled, app)),
+                None,
+                LocalOnlyIconState::Hidden,
+                ToggleState::Enabled,
+                appearance,
+            ),
+            render_ai_feature_switch(
+                self.local_openai_endpoint_switch.clone(),
+                local_endpoint.enabled,
+                is_enabled,
+                AISettingsPageAction::ToggleLocalOpenAIEndpoint,
+                app,
+            ),
+            appearance,
+            None,
+        );
+
+        let description = render_ai_setting_description(
+            "Route local Codex agent runs through an OpenAI-compatible endpoint on this machine.",
+            is_enabled,
+            app,
+        );
+
+        Flex::column()
+            .with_child(toggle)
+            .with_child(description)
+            .with_child(
+                Flex::column()
+                    .with_spacing(16.)
+                    .with_child(self.render_api_key_input(
+                        appearance,
+                        "Endpoint URL",
+                        self.local_openai_endpoint_url_editor.clone(),
+                        is_enabled,
+                        app,
+                    ))
+                    .with_child(self.render_api_key_input(
+                        appearance,
+                        "API key",
+                        self.local_openai_endpoint_api_key_editor.clone(),
+                        is_enabled,
+                        app,
+                    ))
+                    .with_child(self.render_api_key_input(
+                        appearance,
+                        "Model",
+                        self.local_openai_endpoint_model_editor.clone(),
+                        is_enabled,
+                        app,
+                    ))
+                    .finish(),
+            )
+            .finish()
     }
 
     fn render_custom_inference_description(&self, app: &AppContext) -> Box<dyn Element> {
@@ -7309,7 +7504,7 @@ impl SettingsWidget for ApiKeysWidget {
     type View = AISettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "api keys bring your own byo openai anthropic google claude gemini gpt custom inference endpoint"
+        "api keys bring your own byo openai anthropic google claude gemini gpt custom inference endpoint local cli proxy codex model"
     }
 
     fn render(
@@ -7380,6 +7575,11 @@ impl SettingsWidget for ApiKeysWidget {
 
         // Provider key editors (always visible)
         column.add_child(self.render_provider_key_editors(appearance, provider_keys_enabled, app));
+        column.add_child(
+            Container::new(self.render_local_openai_endpoint(appearance, is_any_ai_enabled, app))
+                .with_margin_top(16.)
+                .finish(),
+        );
 
         // Custom endpoints sub-label + list (only when flag on and endpoints non-empty)
         if show_custom_inference {
